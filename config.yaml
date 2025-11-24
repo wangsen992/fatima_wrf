@@ -1,0 +1,7 @@
+---
+  wrf_run: /afs/crc.nd.edu/user/r/rdimitro/Public/FATIMA
+  case_name: LES_MYNN_NSSL17_changed_lev
+  file_prefix: wrfout_d06
+  proc_dir: /scratch365/swang18/Workspace/Projects/FATIMA_RENETA_CASES/
+  
+  
