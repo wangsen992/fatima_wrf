@@ -1,8 +1,10 @@
 """preprocessing script"""
 
+import argparse
 from typing import Union
 from pathlib import Path
-from cartopy import crs
+import logging
+import pyproj
 import yaml
 
 import numpy as np
@@ -10,35 +12,25 @@ import xarray as xr
 import xwrf, pint_xarray
 
 import metpy.calc as mcalc
+from pint import Quantity
 import xgcm
+import pdb
+from dask.diagnostics.progress import ProgressBar
 
-import argparse
-import logging
 
-
-def read_wrfout(paths: list[Path], chunks=None) -> xr.Dataset:
+def read_wrfout(paths: list[Path], t_chunk=2) -> xr.Dataset:
     """Read raw wrfout (output directly from wrf) and return as one file"""
     logging.info(f"Reading wrfout files: {paths}")
-    ds_raw: xr.Dataset = xr.concat(
-        [xr.open_mfdataset(path).xwrf.postprocess() for path in paths], dim="Time"
+    ds_raw = xr.open_mfdataset(
+        paths,
+        combine="nested",
+        concat_dim="Time",
+        chunks={"Time": t_chunk},
+        parallel=True,
     )
-    if chunks:
-        ds_raw = ds_raw.xwrf.destagger().chunk(chunks=chunks)
+    ds_raw = ds_raw.xwrf.postprocess().xwrf.destagger()
     ds_raw = ds_raw.sortby("Time")
     return ds_raw
-
-
-def get_crs(ds: xr.Dataset) -> crs.CRS:
-    """Get CRS from wrf output and parse to cartopy.CRS"""
-    logging.info("Getting CRS from wrfout")
-    wrf_crs = crs.CRS(ds.wrf_projection[0].compute().item())
-    wrf_crs_dict = wrf_crs.to_dict()
-    new_crs = crs.LambertConformal(
-        central_longitude=wrf_crs_dict["lon_0"],
-        central_latitude=wrf_crs_dict["lat_0"],
-        standard_parallels=(wrf_crs_dict["lat_1"], wrf_crs_dict["lat_2"]),
-    )
-    return new_crs
 
 
 def to_hlevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
@@ -64,13 +56,12 @@ def to_hlevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
 
     v2d_dict = {}
     for v2d in vars_2d:
-        v2d_dict = ds[v2d].metpy.dequantify()
+        v2d_dict[v2d] = ds[v2d].metpy.dequantify()
     v3d_dict.update(v2d_dict)
 
     ds_p = xr.Dataset(v3d_dict)
     ds_p["wrf_projection"] = ds.wrf_projection
     ds_p.attrs = ds.attrs
-    ds_p = ds_p.persist()
 
     return ds_p
 
@@ -85,12 +76,24 @@ def compute_additional_variables_inplace(ds: xr.Dataset):
     ds["wind_speed"] = mcalc.wind_speed(
         ds["U"].metpy.quantify(), ds["V"].metpy.quantify()
     ).metpy.dequantify()
-    ds["wind_direction_10"] = mcalc.wind_direction(
-        ds["U10"].metpy.quantify(), ds["V10"].metpy.quantify()
-    ).metpy.quantify()
-    ds["wind_direction"] = mcalc.wind_direction(
-        ds["U"].metpy.quantify(), ds["V"].metpy.quantify()
-    ).metpy.quantify()
+    u10 = ds["U10"].compute()
+    v10 = ds["V10"].compute()
+    u10 = ds["U10"].compute()
+    v10 = ds["V10"].compute()
+    wdir_10 = mcalc.wind_direction(
+        u10.metpy.quantify(), v10.metpy.quantify()
+    ).metpy.dequantify()
+    ds["wind_direction_10"] = wdir_10.where(
+        wdir_10 >= 0, wdir_10 + Quantity(360, "deg")
+    )
+    u = ds["U"].compute()
+    v = ds["V"].compute()
+    u = ds["U"].compute()
+    v = ds["V"].compute()
+    wdir = mcalc.wind_direction(
+        u.metpy.quantify(), v.metpy.quantify()
+    ).metpy.dequantify()
+    ds["wind_direction"] = wdir.where(wdir >= 0, wdir + Quantity(360, "deg"))
 
     ds["Ta"] = mcalc.temperature_from_potential_temperature(
         ds["air_pressure"].metpy.quantify(),
@@ -104,12 +107,6 @@ def compute_additional_variables_inplace(ds: xr.Dataset):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        filename="preprocess.log",
-        filemode="w",
-        level=logging.DEBUG,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
     parser = argparse.ArgumentParser(
         description="Preprocessor to work directly on wrfout files"
     )
@@ -125,11 +122,21 @@ if __name__ == "__main__":
         help="use this flag if parallel processing with dask is needed",
         action="store_true",
     )
+    parser.add_argument(
+        "--logfile", help="name or full path of the logfile", default="./app.log"
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        filename=args.logfile,
+        filemode="w",
+        level=logging.DEBUG,
+        format="%(asctime)s | %(levelname)s | %(funcName)s | %(message)s",
+    )
     logging.info(f"program args: {args}")
 
     ## Input
-    with open("config.yaml", "r") as config_buf:
+    with open(args.config, "r") as config_buf:
         config = yaml.load(config_buf, Loader=yaml.Loader)
 
         run_dir = Path(config["wrf_run"])
@@ -157,7 +164,10 @@ if __name__ == "__main__":
 
         client.close()
 
-    ds = read_wrfout(fpaths, chunks="auto" if args.parallel else None)
+    ds = read_wrfout(fpaths, t_chunk=2)
+
+    ## Unify chunks to avoid inconsistencies
+    ds = ds.unify_chunks()
 
     ## Compute relevant variables
 
@@ -166,9 +176,16 @@ if __name__ == "__main__":
     ## Project to height levels
     ds_p = to_hlevs(ds, np.arange(100, 2000, 100))
 
+    ## Replace wrf_projection
+    crs: pyproj.CRS = ds_p.wrf_projection.item()
+    ds_p["wrf_projection"] = crs.to_proj4()
+
     ### Export to Zarr
     zarr_dir = proc_dir / "data_zarr"
     zarr_dir.mkdir(exist_ok=True)
 
-    ds_p = ds_p.chunk(chunks="auto")
-    ds_p.to_zarr(zarr_dir / f"{file_prefix}.zarr", mode="w")
+    if args.parallel:
+        with ProgressBar():
+            ds_p.to_zarr(zarr_dir / f"{file_prefix}.zarr", mode="w")
+    else:
+        ds_p.to_zarr(zarr_dir / f"{file_prefix}.zarr", mode="w")
