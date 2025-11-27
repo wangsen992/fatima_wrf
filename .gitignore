@@ -1,2 +1,6 @@
 
 .panfs*
+*.log
+data/
+
+__pycache__
