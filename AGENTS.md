@@ -15,6 +15,13 @@
 - No build system configured (no setup.py, pyproject.toml, or Makefile)
 - Environment managed via conda: `conda env create -f requirements.txt`
 
+### Running the Preprocessor
+- Basic usage: `python preprocess.py`
+- With custom paths: `python preprocess.py --wrf-run /path/to/wrf/run --case-name my_case`
+- Custom height levels: `python preprocess.py --hlevs "np.arange(50, 500, 25)"`
+- Parallel processing: `python preprocess.py --parallel`
+- Custom logging: `python preprocess.py --logfile my_log.txt`
+
 ## Code Style Guidelines
 
 ### Imports
@@ -62,7 +69,7 @@
 - Include logging configuration in test files
 
 ### Configuration
-- Use YAML for configuration files (config.yaml)
-- Store file paths and parameters in config rather than hardcoding
-- Use argparse for command-line interface with sensible defaults</content>
+- Use argparse for all configuration with sensible defaults
+- No external config files required
+- All parameters can be overridden via command-line arguments</content>
 <parameter name="filePath">/scratch365/swang18/Workspace/Projects/FATIMA_Darko/fatima_wrf/AGENTS.md
