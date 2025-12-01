@@ -1,7 +1,0 @@
----
-  wrf_run: /scratch365/swang18/Workspace/apps/wrf/run/
-  case_name: fatima-20220720_20220723
-  file_prefix: wrfout_d01
-  proc_dir: ./data
-  
-  
