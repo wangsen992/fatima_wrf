@@ -1,13 +1,26 @@
-"""preprocessing script"""
+"""preprocessing script
+
+Example to run on command line: 
+```bash
+python preprocess.py \
+    --wrf-run /afs/crc.nd.edu/user/r/rdimitro/Public/FATIMA/ \
+    --case-name MYNN_NSSL17_78-107lev \
+    --file-prefix wrfout_d02 \
+    --proc-dir ./data \
+    --levs "np.arange(100, 5000, 100)" \
+    --interp_var geopotential_height
+```
+"""
 
 import argparse
+import ast
 from typing import Union
 from pathlib import Path
 import logging
 import pyproj
-import yaml
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 import xwrf, pint_xarray
 
@@ -16,24 +29,51 @@ from pint import Quantity
 import xgcm
 import pdb
 from dask.diagnostics.progress import ProgressBar
+from dask import config as dask_config
+
+dask_config.set(scheduler="threads")
+
+
+def parse_arange_expr(expr: str) -> np.ndarray:
+    """Safely parse np.arange(start, stop, step) expression"""
+    try:
+        tree = ast.parse(expr, mode="eval")
+        if not isinstance(tree.body, ast.Call):
+            raise ValueError("Not a function call")
+        if not isinstance(tree.body.func, ast.Attribute):
+            raise ValueError("Not np.arange call")
+        if tree.body.func.attr != "arange":
+            raise ValueError("Not arange function")
+
+        args = []
+        for arg in tree.body.args:
+            if isinstance(arg, ast.Num):
+                args.append(arg.n)
+            else:
+                raise ValueError("Non-numeric argument")
+
+        if len(args) != 3:
+            raise ValueError("arange needs 3 arguments")
+
+        return np.arange(*args)
+    except Exception as e:
+        raise ValueError(f"Invalid arange expression: {e}")
 
 
 def read_wrfout(paths: list[Path], t_chunk=2) -> xr.Dataset:
     """Read raw wrfout (output directly from wrf) and return as one file"""
     logging.info(f"Reading wrfout files: {paths}")
     ds_raw = xr.open_mfdataset(
-        paths,
-        combine="nested",
-        concat_dim="Time",
-        chunks={"Time": t_chunk},
-        parallel=True,
+        paths, combine="nested", concat_dim="Time", chunks={"Time": t_chunk}
     )
     ds_raw = ds_raw.xwrf.postprocess().xwrf.destagger()
     ds_raw = ds_raw.sortby("Time")
     return ds_raw
 
 
-def to_hlevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
+def _to_levs(
+    ds: xr.Dataset, levs: Union[list, np.ndarray], lev_type="geopotential_height"
+) -> xr.Dataset:
     """Project an input xr.Dataset from original wrf vertical coordinate to predefined altitude levels"""
 
     logging.info(f"Project xr.Dataset to altitude levels {levs}")
@@ -50,7 +90,7 @@ def to_hlevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
             ds[v3d].metpy.dequantify(),
             "Z",
             levs,
-            target_data=ds.geopotential_height,
+            target_data=ds[lev_type],
             method="linear",
         )
 
@@ -64,6 +104,14 @@ def to_hlevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
     ds_p.attrs = ds.attrs
 
     return ds_p
+
+
+def to_hlevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
+    return _to_levs(ds, levs, lev_type="geopotential_height")
+
+
+def to_plevs(ds: xr.Dataset, levs: Union[list, np.ndarray]) -> xr.Dataset:
+    return _to_levs(ds, levs, lev_type="air_pressure")
 
 
 def compute_additional_variables_inplace(ds: xr.Dataset):
@@ -106,21 +154,39 @@ def compute_additional_variables_inplace(ds: xr.Dataset):
     ).metpy.dequantify()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(
         description="Preprocessor to work directly on wrfout files"
     )
     parser.add_argument(
-        "-c",
-        "--config",
+        "--wrf-run",
         type=str,
-        help="yaml file that provides configurations",
-        default="./config.yaml",
+        default="/scratch365/swang18/Workspace/apps/wrf/run/",
+        help="Path to WRF run directory",
     )
     parser.add_argument(
-        "--parallel",
-        help="use this flag if parallel processing with dask is needed",
-        action="store_true",
+        "--case-name",
+        type=str,
+        default="fatima-20220720_20220723",
+        help="Name of the WRF case",
+    )
+    parser.add_argument(
+        "--file-prefix", type=str, default="wrfout_d01", help="Prefix for wrfout files"
+    )
+    parser.add_argument(
+        "--proc-dir", type=str, default="./data", help="Processing output directory"
+    )
+    parser.add_argument(
+        "--levs",
+        type=str,
+        default="np.arange(100, 2000, 100)",
+        help="Height levels expression (e.g., 'np.arange(10,100,5)')",
+    )
+    parser.add_argument(
+        "--interp_var",
+        choices=["geopotential_height", "air_pressure"],
+        default="geopotential_height",
+        help="variable used for vertical level interpolation. Used in conjection with --levs",
     )
     parser.add_argument(
         "--logfile", help="name or full path of the logfile", default="./app.log"
@@ -136,35 +202,20 @@ if __name__ == "__main__":
     logging.info(f"program args: {args}")
 
     ## Input
-    with open(args.config, "r") as config_buf:
-        config = yaml.load(config_buf, Loader=yaml.Loader)
+    run_dir = Path(args.wrf_run)
+    case_name = args.case_name
+    case_dir = run_dir / case_name
+    file_prefix = args.file_prefix
+    levs = parse_arange_expr(args.levs)
 
-        run_dir = Path(config["wrf_run"])
-        case_name = config["case_name"]
-        case_dir = run_dir / case_name
-        file_prefix = config["file_prefix"]
+    proc_dir = Path(args.proc_dir) / case_name
 
-        proc_dir = Path(config["proc_dir"]) / case_name
+    proc_dir.mkdir(exist_ok=True, parents=True)
 
-        proc_dir.mkdir(exist_ok=True, parents=True)
-
-        fpaths: list[Path] = list(case_dir.glob(f"{file_prefix}*"))
+    fpaths: list[Path] = list(case_dir.glob(f"{file_prefix}*"))
     logging.info(f"wrfout files detected : {fpaths}")
 
-    ## Parallel Configuration
-    if args.parallel:
-        from distributed import LocalCluster
-
-        cluster = LocalCluster()
-        client = cluster.get_client()
-
-        logging.info(
-            f"Dask local cluster with client daskboard link @ {client.dashboard_link}"
-        )
-
-        client.close()
-
-    ds = read_wrfout(fpaths, t_chunk=2)
+    ds = read_wrfout(fpaths, t_chunk=1)
 
     ## Unify chunks to avoid inconsistencies
     ds = ds.unify_chunks()
@@ -174,18 +225,35 @@ if __name__ == "__main__":
     compute_additional_variables_inplace(ds)
 
     ## Project to height levels
-    ds_p = to_hlevs(ds, np.arange(100, 2000, 100))
+    ds_p = (
+        to_hlevs(ds, levs)
+        if args.interp_var == "geopotential_height"
+        else to_plevs(ds, levs)
+    )
 
     ## Replace wrf_projection
     crs: pyproj.CRS = ds_p.wrf_projection.item()
     ds_p["wrf_projection"] = crs.to_proj4()
 
+    ## Include the preprocessing config parameters into the output
+    ds_p.attrs.update(
+        dict(
+            PREPROCESS_WRFRUN=args.wrf_run,
+            PREPROCESS_CASE_NAME=args.case_name,
+            PREPROCESS_FILE_PREFIX=args.file_prefix,
+            PREPROCESS_LEVS=args.levs,
+            PREPROCESS_INTERP_VAR=args.interp_var,
+            PREPROCESS_TIMESTAMP=pd.Timestamp.now().isoformat(),
+        )
+    )
+
     ### Export to Zarr
-    zarr_dir = proc_dir / "data_zarr"
+    zarr_dir = proc_dir
     zarr_dir.mkdir(exist_ok=True)
 
-    if args.parallel:
-        with ProgressBar():
-            ds_p.to_zarr(zarr_dir / f"{file_prefix}.zarr", mode="w")
-    else:
-        ds_p.to_zarr(zarr_dir / f"{file_prefix}.zarr", mode="w")
+    with ProgressBar():
+        ds_p.to_zarr(zarr_dir / f"{file_prefix}_hlevs.zarr", mode="w")
+
+
+if __name__ == "__main__":
+    main()
