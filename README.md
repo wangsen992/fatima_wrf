@@ -8,7 +8,9 @@ A collection of Python tools for preprocessing and analyzing Weather Research an
 - **Vertical Interpolation**: Regrid 3D variables to custom height or pressure levels
 - **Variable Computation**: Automatically calculate derived meteorological variables (wind speed, direction, temperature, humidity)
 - **Zarr Output**: Efficient storage in Zarr format for fast loading and analysis
+- **Interactive Visualization**: Web-based plotting interface for data exploration
 - **Configurable Processing**: Command-line interface with sensible defaults
+- **Remote Server Support**: SSH tunneling support for headless environments
 
 ## Installation
 
@@ -90,6 +92,40 @@ The processed dataset includes:
 - `PREPROCESS_FILE_PREFIX`: File prefix used
 - `PREPROCESS_LEVS`: Height levels expression
 - `PREPROCESS_INTERP_VAR`: Interpolation variable used
+
+## Interactive Visualization
+
+The `apps/` directory contains three interactive plotting applications:
+
+### Height Level Plotting
+```bash
+python apps/make_plots_hlev.py ./data/wrf_hlevs.zarr --serve --web-port=8860
+```
+
+### Pressure Level Plotting
+```bash
+python apps/make_plots_plev.py ./data/wrf_hlevs.zarr --serve --web-port=8870
+```
+
+### Advanced Height Level Plotting
+```bash
+python apps/make_plots_hlev_advanced.py ./data/wrf_hlevs.zarr --serve --web-port=8880
+```
+
+### Remote Server Access
+For headless/remote servers, use SSH tunneling:
+```bash
+# On your local machine
+ssh -N -f -L localhost:8860:localhost:8860 user@server
+# Then open http://localhost:8860 in your browser
+```
+
+All applications support:
+- Interactive 2D/3D variable visualization
+- Time animation controls
+- Customizable colormaps and plot dimensions
+- SSH tunneling for remote access
+- Headless environment compatibility
 
 ## Data Variables
 
