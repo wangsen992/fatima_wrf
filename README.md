@@ -22,11 +22,40 @@ cd fatima_wrf
 
 2. Create conda environment:
 ```bash
-conda env create -f requirements.txt
-conda activate wrf_postproc
+conda env create -f environment.yml
+conda activate fatima_wrf
 ```
 
+### Shell Helpers (Optional)
+
+For easier WRF case management, source the provided bashrc:
+```bash
+source bashrc
+```
+
+This adds WRF/WPS binaries to your PATH and enables shell functions for case initialization and cleanup.
+
 ## Usage
+
+### ERA5 Data Download
+
+Download ERA5 reanalysis data from the ECMWF Climate Data Store:
+```bash
+python bin/cds_download.py \
+    --start-dt "2022-07-20 00:00" \
+    --end-dt "2022-07-23 12:00" \
+    --freq 6h \
+    --output-dir data_extern
+```
+
+**Note:** Requires valid CDS API credentials in `~/.cdsapirc`. See [cds.climate.copernicus.eu](https://cds.climate.copernicus.eu) to obtain an API key.
+
+### WRF Case Initialization
+
+```bash
+wrf_init_case   # Symlinks WPS/WRF executables, copies namelists, sets up ERA5 Vtable
+wrf_clean_case  # Cleans up case directory (keeps cds_download.py and case_*.sh)
+```
 
 ### Basic Preprocessing
 
@@ -150,12 +179,20 @@ All applications support:
 ```
 fatima_wrf/
 ├── preprocess.py          # Main preprocessing script
+├── environment.yml       # Conda environment definition
+├── bashrc                # Shell helpers for WRF case management
+├── bin/
+│   ├── cds_download.py   # ERA5 data downloader
+│   └── RunFunctions.sh   # Shell functions for case management
 ├── tests/
 │   ├── load_dataset.py    # Basic data loading test
 │   └── __init__.py
+├── apps/                  # Interactive visualization apps
+├── data/                  # Processed output directory
+├── data_extern/           # External data (ERA5 downloads)
 ├── AGENTS.md             # Development guidelines
 ├── README.md             # This file
-├── requirements.txt      # Python dependencies
+├── requirements.txt      # Python dependencies (legacy)
 ├── __init__.py
 └── .gitignore
 ```

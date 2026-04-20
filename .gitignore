@@ -2,5 +2,5 @@
 .panfs*
 *.log
 data/
-
+data_extern/
 __pycache__
